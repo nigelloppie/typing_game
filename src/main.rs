@@ -7,19 +7,18 @@ use ratatui::{
     widgets::{block::*, *},
 };
 use std::time::SystemTime;
-use std::{io::Result, time::UNIX_EPOCH, u64, u8};
+use std::{io::Result, time::UNIX_EPOCH, u64};
 mod tui;
 
 #[derive(Debug, Default)]
 pub struct App {
-    counter: u8,
     exit: bool,
     word_list: Vec<String>,
     typed_letters: Vec<String>,
     playing: bool,
     done: bool,
     start_time: u64,
-    duration: String,
+    duration: u64,
     correct_char: u64,
 }
 
@@ -52,21 +51,26 @@ impl App {
     fn handle_key_event(&mut self, key_event: KeyEvent) {
         match key_event.code {
             KeyCode::Esc => self.exit(),
-            KeyCode::Left => self.decrement_counter(),
-            KeyCode::Right => self.increment_counter(),
             KeyCode::Char(c) => {
-                self.typed_letters.push(c.to_string());
+                if !self.done {
+                    self.typed_letters.push(c.to_string());
+                }
             }
-            KeyCode::Backspace => match self.typed_letters.pop() {
-                Some(_top) => {}
-                None => {}
-            },
+            KeyCode::Backspace => {
+                if !self.done {
+                    match self.typed_letters.pop() {
+                        Some(_top) => {}
+                        None => {}
+                    }
+                }
+            }
+            KeyCode::Tab => self.restart(),
             _ => {}
         }
     }
 
     fn timer(&mut self) {
-        if !self.playing {
+        if !self.playing && !self.done {
             self.done = false;
             self.playing = true;
             self.start_time = SystemTime::now()
@@ -90,26 +94,34 @@ impl App {
                 .duration_since(start_time)
                 .expect("Time went backwards");
             let total_secs = duration.as_secs();
-            let minutes = total_secs / 60;
-            let seconds = total_secs % 60;
-            self.duration = format!("{:02}:{:02}", minutes, seconds);
+            self.duration = total_secs;
         }
+    }
+
+    fn format_time(&self) -> String {
+        let minutes = self.duration / 60;
+        let seconds = self.duration % 60;
+
+        format!("{:02}:{:02}", minutes, seconds)
     }
 
     fn exit(&mut self) {
         self.exit = true;
     }
 
-    fn increment_counter(&mut self) {
-        self.counter += 1;
-    }
-
-    fn decrement_counter(&mut self) {
-        self.counter -= 1;
-    }
-
     pub fn set_done(&mut self) {
         self.done = true;
+    }
+
+    pub fn restart(&mut self) {
+        self.playing = false;
+        self.done = false;
+        self.exit = false;
+        self.word_list = get_word_list();
+        self.typed_letters = Vec::new();
+        self.start_time = 0;
+        self.duration = 0;
+        self.correct_char = 0;
     }
 
     fn check_correct_char(&self) -> Vec<Span> {
@@ -177,7 +189,12 @@ impl App {
 impl Widget for &App {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let title = Title::from(" Terminal Typer ".bold());
-        let instructions = Title::from(Line::from(vec![" Quit ".into(), "<ESC> ".blue().bold()]));
+        let instructions = Title::from(Line::from(vec![
+            " Restart ".into(),
+            "<TAB> ".blue().bold(),
+            " Quit ".into(),
+            "<ESC> ".blue().bold(),
+        ]));
         let block = Block::default()
             .title(title.alignment(Alignment::Center))
             .title(
@@ -186,36 +203,34 @@ impl Widget for &App {
                     .position(Position::Bottom),
             )
             .borders(Borders::ALL)
-            .border_set(border::THICK);
-
-        let text: Vec<Span> = App::check_correct_char(&self);
-        if self.typed_letters.join("").len() >= self.word_list.join("").len() {
-            Paragraph::new(format!(
-                "You took: {}\nAccuracy: {}/{}",
-                self.duration,
-                self.correct_char,
-                self.word_list.join("").len()
-            ))
-            .centered()
-            .wrap(Wrap { trim: true })
-            .block(block.padding(Padding::new(
+            .border_set(border::THICK)
+            .padding(Padding::new(
                 area.width / 4,
                 area.width / 4,
                 area.height / 4,
                 0,
-            )))
-            .render(area, buf);
-        } else {
+            ));
+        if !self.done {
+            let text: Vec<Span> = App::check_correct_char(&self);
             Paragraph::new(Line::from(text))
                 .centered()
                 .wrap(Wrap { trim: true })
-                .block(block.padding(Padding::new(
-                    area.width / 4,
-                    area.width / 4,
-                    area.height / 4,
-                    0,
-                )))
+                .block(block)
                 .render(area, buf);
+        } else {
+            if self.typed_letters.join("").len() >= self.word_list.join("").len() {
+                Paragraph::new(format!(
+                    "You took: {}\nAccuracy: {}/{}\nWPM: {:.0}",
+                    self.format_time(),
+                    self.correct_char,
+                    self.word_list.join("").len(),
+                    calculate_wpm(self.correct_char, self.duration),
+                ))
+                .centered()
+                .wrap(Wrap { trim: true })
+                .block(block)
+                .render(area, buf);
+            }
         }
     }
 }
@@ -231,9 +246,10 @@ fn get_word_list() -> Vec<String> {
     let mut word_list = vec![];
     let mut rng = rand::thread_rng();
 
-    for n in 1..10 {
+    let max = 26;
+    for n in 1..max {
         let x: usize = rng.gen_range(0..WORDS.len());
-        if n == 9 {
+        if n == max - 1 {
             word_list.push(WORDS[x].to_owned());
         } else {
             word_list.push(WORDS[x].to_owned() + " ");
@@ -241,4 +257,11 @@ fn get_word_list() -> Vec<String> {
     }
 
     word_list
+}
+
+fn calculate_wpm(chars_typed: u64, time_seconds: u64) -> f64 {
+    let words_typed = chars_typed as f64 / 5.0;
+    let time_minutes = time_seconds as f64 / 60.0;
+
+    words_typed / time_minutes
 }
